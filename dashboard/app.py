@@ -1,12 +1,58 @@
-import streamlit as st
+import os
+import sys
+import subprocess
+import time
+
 import requests
+import streamlit as st
 
 st.set_page_config(page_title="FC-01: Privacy-Preserving Financial Exchange", layout="wide")
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+SERVICES = {
+    "aggregator": (5000, os.path.join(REPO_ROOT, "services", "aggregator_service", "app.py")),
+    "bank": (5001, os.path.join(REPO_ROOT, "services", "bank_service", "app.py")),
+    "nbfc": (5002, os.path.join(REPO_ROOT, "services", "nbfc_service", "app.py")),
+    "bureau": (5003, os.path.join(REPO_ROOT, "services", "bureau_service", "app.py")),
+}
 
 BANK_URL = "http://127.0.0.1:5001"
 NBFC_URL = "http://127.0.0.1:5002"
 BUREAU_URL = "http://127.0.0.1:5003"
 AGGREGATOR_URL = "http://127.0.0.1:5000"
+
+
+def _is_healthy(port, timeout=1):
+    try:
+        r = requests.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
+        return r.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+@st.cache_resource
+def ensure_services_running():
+    """Start any backend service that isn't already reachable. Cached so
+    this only runs once per app lifetime, not on every button click."""
+    for name, (port, path) in SERVICES.items():
+        if not _is_healthy(port):
+            subprocess.Popen([sys.executable, path])
+
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if all(_is_healthy(port) for port, _ in SERVICES.values()):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+with st.spinner("Starting backend services..."):
+    services_ok = ensure_services_running()
+
+if not services_ok:
+    st.error("Backend services failed to start. Refresh the page to retry.")
+    st.stop()
 
 st.title("FC-01 — Privacy-Preserving Financial Data Exchange")
 st.caption("Additive secret-sharing MPC demo — Bank, NBFC, and Credit Bureau jointly compute a loan eligibility decision without revealing their private values to each other or to the aggregator.")
