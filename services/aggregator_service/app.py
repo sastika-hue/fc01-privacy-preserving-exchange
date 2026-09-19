@@ -9,12 +9,12 @@ from secret_sharing import secure_sum, threshold_check
 app = Flask(__name__)
 
 EXPECTED_INSTITUTIONS = ["bank", "nbfc", "bureau"]
-THRESHOLD = 50000  # demo eligibility threshold for the summed composite score
+THRESHOLD = 50000
 
-# In-memory state for one demo "round". Cleared with POST /reset between runs.
 state = {
-    "received_shares": {},  # institution name -> [s1, s2, s3]
-    "decision": None,       # None | "Eligible" | "Not Eligible"
+    "received_shares": {},
+    "decision": None,
+    "customer_id": None,
 }
 
 
@@ -27,6 +27,7 @@ def health():
 def reset():
     state["received_shares"] = {}
     state["decision"] = None
+    state["customer_id"] = None
     return jsonify({"status": "reset"})
 
 
@@ -35,17 +36,18 @@ def receive_shares():
     data = request.get_json(force=True)
     institution = data.get("institution")
     shares = data.get("shares")
+    customer_id = data.get("customer_id")
 
     if institution not in EXPECTED_INSTITUTIONS:
         return jsonify({"error": f"unknown institution '{institution}'"}), 400
     if not isinstance(shares, list) or len(shares) != 3:
         return jsonify({"error": "shares must be a list of 3 integers"}), 400
 
-    # This print is exactly what the network-trace panel will show later:
-    # meaningless share numbers on the wire, never the raw value.
-    print(f"[AGGREGATOR] Received shares from '{institution}': {shares}")
+    print(f"[AGGREGATOR] Received shares from '{institution}' (customer={customer_id}): {shares}")
 
     state["received_shares"][institution] = shares
+    if customer_id:
+        state["customer_id"] = customer_id
 
     response = {
         "status": "received",
@@ -59,7 +61,8 @@ def receive_shares():
         state["decision"] = "Eligible" if eligible else "Not Eligible"
         response["status"] = "complete"
         response["decision"] = state["decision"]
-        print(f"[AGGREGATOR] All shares in. Decision: {state['decision']}")
+        response["customer_id"] = state["customer_id"]
+        print(f"[AGGREGATOR] All shares in for {state['customer_id']}. Decision: {state['decision']}")
 
     return jsonify(response)
 
@@ -71,7 +74,7 @@ def get_decision():
             "status": "waiting",
             "institutions_received": list(state["received_shares"].keys()),
         })
-    return jsonify({"status": "complete", "decision": state["decision"]})
+    return jsonify({"status": "complete", "decision": state["decision"], "customer_id": state["customer_id"]})
 
 
 if __name__ == "__main__":

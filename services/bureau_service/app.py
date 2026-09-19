@@ -12,8 +12,12 @@ app = Flask(__name__)
 INSTITUTION_NAME = "bureau"
 AGGREGATOR_URL = "http://127.0.0.1:5000/receive-shares"
 
-# Configurable private value: the customer's repayment score.
-private_value = 720
+CUSTOMER_DB = {
+    "CUST001": {"name": "Arjun Menon", "score": 780},
+    "CUST002": {"name": "Divya Rao", "score": 310},
+    "CUST003": {"name": "Karthik Iyer", "score": 650},
+    "CUST004": {"name": "Meena Pillai", "score": 200},
+}
 
 
 @app.route("/health", methods=["GET"])
@@ -21,27 +25,32 @@ def health():
     return jsonify({"service": "bureau_service", "status": "ok"})
 
 
-@app.route("/set-value", methods=["POST"])
-def set_value():
-    global private_value
-    data = request.get_json(force=True)
-    value = data.get("value")
-    if not isinstance(value, int) or value < 0:
-        return jsonify({"error": "value must be a non-negative integer"}), 400
-    private_value = value
-    return jsonify({"service": INSTITUTION_NAME, "private_value_set_to": private_value})
+@app.route("/customers", methods=["GET"])
+def list_customers():
+    return jsonify([
+        {"customer_id": cid, "name": rec["name"]}
+        for cid, rec in CUSTOMER_DB.items()
+    ])
 
 
 @app.route("/submit", methods=["POST"])
 def submit():
-    shares = split(private_value)
-    print(f"[{INSTITUTION_NAME.upper()}] Splitting private value into shares: {shares}")
+    data = request.get_json(force=True)
+    customer_id = data.get("customer_id")
 
-    payload = {"institution": INSTITUTION_NAME, "shares": shares}
+    if customer_id not in CUSTOMER_DB:
+        return jsonify({"error": f"unknown customer_id '{customer_id}'"}), 404
+
+    private_value = CUSTOMER_DB[customer_id]["score"]
+    shares = split(private_value)
+    print(f"[{INSTITUTION_NAME.upper()}] Splitting score for {customer_id} into shares: {shares}")
+
+    payload = {"institution": INSTITUTION_NAME, "customer_id": customer_id, "shares": shares}
     resp = requests.post(AGGREGATOR_URL, json=payload, timeout=5)
 
     return jsonify({
         "service": INSTITUTION_NAME,
+        "customer_id": customer_id,
         "shares_sent": shares,
         "aggregator_response": resp.json(),
     })

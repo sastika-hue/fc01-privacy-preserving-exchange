@@ -1,115 +1,100 @@
-import os
-import sys
-import subprocess
-import time
-
-import requests
 import streamlit as st
+import requests
 
-st.set_page_config(page_title="FC-01: Privacy-Preserving Financial Exchange", layout="wide")
-
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-SERVICES = {
-    "aggregator": (5000, os.path.join(REPO_ROOT, "services", "aggregator_service", "app.py")),
-    "bank": (5001, os.path.join(REPO_ROOT, "services", "bank_service", "app.py")),
-    "nbfc": (5002, os.path.join(REPO_ROOT, "services", "nbfc_service", "app.py")),
-    "bureau": (5003, os.path.join(REPO_ROOT, "services", "bureau_service", "app.py")),
-}
+st.set_page_config(
+    page_title="FC-01: Privacy-Preserving Financial Exchange",
+    page_icon="🔐",
+    layout="wide",
+)
 
 BANK_URL = "http://127.0.0.1:5001"
 NBFC_URL = "http://127.0.0.1:5002"
 BUREAU_URL = "http://127.0.0.1:5003"
 AGGREGATOR_URL = "http://127.0.0.1:5000"
 
+INSTITUTIONS = [
+    ("bank", "🏦", "Bank", BANK_URL, "Income"),
+    ("nbfc", "💳", "NBFC", NBFC_URL, "Existing Debt"),
+    ("bureau", "📊", "Credit Bureau", BUREAU_URL, "Repayment Score"),
+]
 
-def _is_healthy(port, timeout=1):
-    try:
-        r = requests.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
-        return r.status_code == 200
-    except requests.exceptions.RequestException:
-        return False
+st.title("🔐 FC-01 — Privacy-Preserving Financial Data Exchange")
+st.caption(
+    "Three institutions jointly compute a loan eligibility decision for a shared "
+    "customer using additive secret-sharing MPC — no institution, and no central "
+    "aggregator, ever sees another party's raw data."
+)
+st.divider()
 
-
-@st.cache_resource
-def ensure_services_running():
-    """Start any backend service that isn't already reachable. Cached so
-    this only runs once per app lifetime, not on every button click."""
-    for name, (port, path) in SERVICES.items():
-        if not _is_healthy(port):
-            subprocess.Popen([sys.executable, path])
-
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        if all(_is_healthy(port) for port, _ in SERVICES.values()):
-            return True
-        time.sleep(0.5)
-    return False
-
-
-with st.spinner("Starting backend services..."):
-    services_ok = ensure_services_running()
-
-if not services_ok:
-    st.error("Backend services failed to start. Refresh the page to retry.")
+try:
+    customers = requests.get(f"{BANK_URL}/customers", timeout=3).json()
+except requests.exceptions.RequestException:
+    st.error(
+        "Can't reach the bank service on port 5001. Make sure all 4 backend "
+        "services (aggregator, bank, nbfc, bureau) are running before using "
+        "this dashboard."
+    )
     st.stop()
 
-st.title("FC-01 — Privacy-Preserving Financial Data Exchange")
-st.caption("Additive secret-sharing MPC demo — Bank, NBFC, and Credit Bureau jointly compute a loan eligibility decision without revealing their private values to each other or to the aggregator.")
+customer_options = {f"{c['name']}  ·  {c['customer_id']}": c["customer_id"] for c in customers}
+
+st.subheader("Step 1 — Select a customer")
+selected_label = st.selectbox("Shared customer on file at all 3 institutions", list(customer_options.keys()))
+selected_customer_id = customer_options[selected_label]
+
+st.divider()
+st.subheader("Step 2 — Each institution's private record")
+st.caption("These values are held locally by each institution. They are never sent anywhere in raw form — only as secret shares.")
+
+cols = st.columns(3)
+for (key, icon, label, url, field_label), col in zip(INSTITUTIONS, cols):
+    with col:
+        with st.container(border=True):
+            st.markdown(f"### {icon} {label}")
+            st.markdown(f"**{field_label}**")
+            st.markdown("🔒 *private — not shown here*")
 
 st.divider()
 
-st.subheader("Step 1 — Set each institution's private value")
-col1, col2, col3 = st.columns(3)
-with col1:
-    bank_value = st.number_input("Bank: Customer income", min_value=0, value=45000, step=1000)
-with col2:
-    nbfc_value = st.number_input("NBFC: Existing debt", min_value=0, value=15000, step=1000)
-with col3:
-    bureau_value = st.number_input("Credit Bureau: Repayment score", min_value=0, value=720, step=10)
+run = st.button("🚀 Run Secure Eligibility Check", type="primary", use_container_width=True)
 
-st.divider()
-
-if st.button("Run Secure Eligibility Check", type="primary"):
+if run:
     trace = []
 
     with st.status("Running the MPC protocol...", expanded=True) as status:
         st.write("Resetting aggregator state...")
         requests.post(f"{AGGREGATOR_URL}/reset", timeout=5)
 
-        st.write("Configuring institution values...")
-        requests.post(f"{BANK_URL}/set-value", json={"value": int(bank_value)}, timeout=5)
-        requests.post(f"{NBFC_URL}/set-value", json={"value": int(nbfc_value)}, timeout=5)
-        requests.post(f"{BUREAU_URL}/set-value", json={"value": int(bureau_value)}, timeout=5)
+        for key, icon, label, url, field_label in INSTITUTIONS:
+            st.write(f"{icon} {label} splitting **{field_label}** into 3 shares and sending to aggregator...")
+            resp = requests.post(f"{url}/submit", json={"customer_id": selected_customer_id}, timeout=5).json()
+            if "error" in resp:
+                status.update(label=f"Error from {label}", state="error")
+                st.error(resp["error"])
+                st.stop()
+            trace.append((label, icon, resp["shares_sent"]))
+            final_resp = resp
 
-        st.write("Bank splitting income into 3 shares and sending to aggregator...")
-        bank_resp = requests.post(f"{BANK_URL}/submit", timeout=5).json()
-        trace.append(("Bank", bank_resp["shares_sent"]))
-
-        st.write("NBFC splitting debt into 3 shares and sending to aggregator...")
-        nbfc_resp = requests.post(f"{NBFC_URL}/submit", timeout=5).json()
-        trace.append(("NBFC", nbfc_resp["shares_sent"]))
-
-        st.write("Credit Bureau splitting repayment score into 3 shares and sending to aggregator...")
-        bureau_resp = requests.post(f"{BUREAU_URL}/submit", timeout=5).json()
-        trace.append(("Credit Bureau", bureau_resp["shares_sent"]))
-
-        decision = bureau_resp["aggregator_response"].get("decision", "unknown")
+        decision = final_resp["aggregator_response"].get("decision", "unknown")
         status.update(label="Protocol complete", state="complete")
 
     st.divider()
-    st.subheader("Step 2 — Network trace (what actually crossed the wire)")
-    st.caption("Each institution only ever sent these numbers. No raw income, debt, or score value was ever transmitted.")
-    for name, shares in trace:
-        st.code(f'{name} -> aggregator: {{"institution": "...", "shares": {shares}}}', language="json")
+    st.subheader("Step 3 — Network trace: what actually crossed the wire")
+    st.caption("Every institution sent only these numbers. No income, debt, or score value was ever transmitted.")
+    for label, icon, shares in trace:
+        st.code(f'{icon} {label} → aggregator:  {{"shares": {shares}}}', language="json")
 
     st.divider()
-    st.subheader("Step 3 — Joint decision")
+    st.subheader("Step 4 — Joint decision")
     if decision == "Eligible":
-        st.success(f"Decision: {decision}")
+        st.success(f"### ✅ Decision: {decision}")
     else:
-        st.error(f"Decision: {decision}")
-    st.caption("The aggregator never reconstructed any single institution's private value — only the joint sum was checked against the threshold.")
+        st.error(f"### ❌ Decision: {decision}")
+    st.caption(
+        "The aggregator summed shares position-wise across institutions and "
+        "reconstructed only the joint total — never any single institution's "
+        "private value."
+    )
 
 st.divider()
 with st.expander("How this works"):
